@@ -5,7 +5,99 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 )
+
+func TestExpireAndGet(t *testing.T) {
+	store := NewStore()
+	store.Set("session", "abc123")
+	store.Expire("session", 50*time.Millisecond)
+
+	// Should still exist immediately after setting the expiration.
+	value, err := store.Get("session")
+	if err != nil {
+		t.Fatalf("expected key to still exist, got error: %v", err)
+	}
+	if value != "abc123" {
+		t.Errorf("expected value 'abc123', got %q", value)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	_, err = store.Get("session")
+	if !errors.Is(err, ErrKeyNotFound) {
+		t.Errorf("expected ErrKeyNotFound after expiration, got %v", err)
+	}
+}
+
+func TestTTL(t *testing.T) {
+	store := NewStore()
+	store.Set("key", "value")
+	store.Expire("key", 1*time.Second)
+
+	remaining, err := store.TTL("key")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if remaining <= 0 || remaining > 1*time.Second {
+		t.Errorf("expected remaining TTL between 0 and 1s, got %v", remaining)
+	}
+}
+
+func TestTTLReturnsErrNoExpiryWhenNotSet(t *testing.T) {
+	store := NewStore()
+	store.Set("key", "value")
+
+	_, err := store.TTL("key")
+	if !errors.Is(err, ErrNoExpiry) {
+		t.Errorf("expected ErrNoExpiry, got %v", err)
+	}
+}
+
+func TestExpireOnMissingKeyReturnsError(t *testing.T) {
+	store := NewStore()
+
+	err := store.Expire("does-not-exist", 1*time.Second)
+	if !errors.Is(err, ErrKeyNotFound) {
+		t.Errorf("expected ErrKeyNotFound, got %v", err)
+	}
+}
+
+func TestPersistRemovesExpiration(t *testing.T) {
+	store := NewStore()
+	store.Set("key", "value")
+	store.Expire("key", 50*time.Millisecond)
+
+	if err := store.Persist("key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	value, err := store.Get("key")
+	if err != nil {
+		t.Fatalf("expected key to survive past its old expiration, got error: %v", err)
+	}
+	if value != "value" {
+		t.Errorf("expected value 'value', got %q", value)
+	}
+}
+
+func TestSetClearsExistingExpiration(t *testing.T) {
+	store := NewStore()
+	store.Set("key", "value")
+	store.Expire("key", 1*time.Second)
+
+	// Overwriting with Set should remove the old expiration,
+	// matching real Redis's behavior for a plain SET.
+	store.Set("key", "new-value")
+
+	_, err := store.TTL("key")
+	if !errors.Is(err, ErrNoExpiry) {
+		t.Errorf("expected ErrNoExpiry after re-Set, got %v", err)
+	}
+}
 
 func TestDelete(t *testing.T) {
 	store := NewStore()
