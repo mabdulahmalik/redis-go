@@ -3,12 +3,14 @@ package main
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
 // Store is our key-value database. It holds every key and value saved so far,
 // plus an expiration instant for each key that was given one via Expire.
 type Store struct {
+	mu          sync.Mutex
 	data        map[string]string
 	expirations map[string]time.Time
 }
@@ -28,6 +30,9 @@ func (s *Store) Get(key string) (string, error) {
 	if key == "" {
 		return "", ErrEmptyKey
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.isExpired(key) {
 		delete(s.data, key)
@@ -50,6 +55,9 @@ func (s *Store) Set(key, value string) error {
 		return ErrEmptyKey
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.data[key] = value
 	delete(s.expirations, key)
 	return nil
@@ -62,6 +70,9 @@ func (s *Store) Delete(key string) error {
 		return ErrEmptyKey
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	delete(s.data, key)
 	delete(s.expirations, key)
 	return nil
@@ -70,6 +81,9 @@ func (s *Store) Delete(key string) error {
 // Keys returns every key currently stored, in no particular order. Expired
 // keys are included until a Get, Expire or TTL call removes them.
 func (s *Store) Keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	keys := make([]string, 0, len(s.data))
 	for key := range s.data {
 		keys = append(keys, key)
@@ -80,6 +94,9 @@ func (s *Store) Keys() []string {
 // Count returns how many keys are currently stored, expired-but-not-yet
 // -removed ones included.
 func (s *Store) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	return len(s.data)
 }
 
@@ -99,6 +116,9 @@ func (s *Store) Expire(key string, ttl time.Duration) error {
 	if key == "" {
 		return ErrEmptyKey
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.isExpired(key) {
 		delete(s.data, key)
@@ -120,6 +140,9 @@ func (s *Store) TTL(key string) (time.Duration, error) {
 	if key == "" {
 		return 0, ErrEmptyKey
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.isExpired(key) {
 		delete(s.data, key)
@@ -145,6 +168,9 @@ func (s *Store) Persist(key string) error {
 	if key == "" {
 		return ErrEmptyKey
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if _, ok := s.data[key]; !ok {
 		return ErrKeyNotFound

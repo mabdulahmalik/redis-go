@@ -2,11 +2,40 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 )
+
+// Run: go test -run TestConcurrentAccess -v ./...   (-v needed to see t.Logf)
+func TestConcurrentAccess(t *testing.T) {
+	store := NewStore()
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			key := fmt.Sprintf("key-%d", n)
+			store.Set(key, "value")
+			store.Get(key)
+			value, err := store.Get(key)
+			if err != nil {
+				t.Errorf("Get(%q) returned unexpected error: %v", key, err)
+			}
+			t.Logf("%s = %s", key, value)
+			store.Keys()
+			store.Count()
+			store.Delete(key)
+		}(i)
+	}
+
+	wg.Wait()
+}
 
 func TestExpireAndGet(t *testing.T) {
 	store := NewStore()
