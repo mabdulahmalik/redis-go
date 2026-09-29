@@ -1,8 +1,7 @@
 package main
 
 import (
-	"errors"
-	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -183,30 +182,7 @@ func (s *Store) Persist(key string) error {
 func main() {
 	store := NewStore()
 
-	if err := store.Set("name", "gopher"); err != nil {
-		fmt.Println("error:", err)
+	if err := RunServer(":6380", store); err != nil {
+		log.Fatal(err)
 	}
-
-	value, err := store.Get("name")
-	if err != nil {
-		fmt.Println("error:", err)
-	} else {
-		fmt.Println(value)
-	}
-
-	_, err = store.Get("missing-key")
-	if errors.Is(err, ErrKeyNotFound) {
-		fmt.Println("that key really doesn't exist")
-	}
-
-	store.Set("session", "abc123")
-	store.Expire("session", 100*time.Millisecond)
-
-	value, err = store.Get("session")
-	fmt.Println(value, err) // abc123 <nil>
-
-	time.Sleep(150 * time.Millisecond)
-
-	_, err = store.Get("session")
-	fmt.Println(errors.Is(err, ErrKeyNotFound)) // true
 }
