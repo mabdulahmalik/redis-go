@@ -1,12 +1,11 @@
 package main
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"strings"
 )
 
 // Listen opens a TCP listener on address (e.g. ":6380", meaning that port on
@@ -48,28 +47,33 @@ func RunServer(address string, store *Store) error {
 	return nil
 }
 
-// handleConnection serves one client, line by line, until it disconnects or
-// errors. Placeholder echo protocol; Part 7 swaps this body for RESP parsing.
+// handleConnection serves one client: read a complete RESP value, check its shape,
+// reply. Reply is TEMPORARY text until a RESP encoder and real execution land.
 func handleConnection(conn net.Conn, store *Store) {
 	defer conn.Close()
 
-	reader := bufio.NewReader(conn)
+	reader := NewRESPReader(conn)
 
 	for {
-		line, err := reader.ReadString('\n')
+		value, err := reader.Read()
 		if err != nil {
-			if err != io.EOF {
+			// io.EOF is a clean disconnect between commands: normal, not
+			// logged. Truncation, protocol and network errors are. All close.
+			if !errors.Is(err, io.EOF) {
 				log.Printf("read error from %s: %v", conn.RemoteAddr(), err)
 			}
 			return
 		}
 
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			continue
+		args, err := commandFromValue(value)
+		if err != nil {
+			log.Printf("bad command from %s: %v", conn.RemoteAddr(), err)
+			return
 		}
 
-		response := fmt.Sprintf("you said: %s\n", line)
+		// %q quotes each argument, so you can see where one ends and the next
+		// begins even when an argument contains a space or a newline.
+		response := fmt.Sprintf("received: %q\n", args)
 		if _, err := conn.Write([]byte(response)); err != nil {
 			log.Printf("write error to %s: %v", conn.RemoteAddr(), err)
 			return
