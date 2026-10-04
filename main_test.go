@@ -23,11 +23,11 @@ func TestConcurrentAccess(t *testing.T) {
 			key := fmt.Sprintf("key-%d", n)
 			store.Set(key, "value")
 			store.Get(key)
-			value, err := store.Get(key)
+			_, err := store.Get(key)
 			if err != nil {
 				t.Errorf("Get(%q) returned unexpected error: %v", key, err)
 			}
-			t.Logf("%s = %s", key, value)
+			// t.Logf("%s = %s", key, value)
 			store.Keys()
 			store.Count()
 			store.Delete(key)
