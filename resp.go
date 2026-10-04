@@ -28,9 +28,9 @@ const (
 	maxNestingDepth = 32                // arrays inside arrays, at most this deep
 )
 
-//    TypeSimpleString, TypeError, TypeBulkString       -> Str                                              
-//    TypeInteger                                       -> Num                                             
-//    TypeArray                                         -> Items                            
+//    TypeSimpleString, TypeError, TypeBulkString       -> Str
+//    TypeInteger                                       -> Num
+//    TypeArray                                         -> Items
 // 	Value is one parsed RESP value. Go has no sum type, so one struct covers all
 // 	five: Type picks the live field including Str (+ - $), Num (:), Items (*), Null ($-1/*-1).
 type Value struct {

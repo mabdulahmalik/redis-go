@@ -1,10 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"io"
 	"net"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,7 +36,7 @@ func startTestServer(t *testing.T) net.Conn {
 	return conn
 }
 
-func TestServerParsesRESPCommand(t *testing.T) {
+func TestServerEchoesCommandAsRESPArray(t *testing.T) {
 	conn := startTestServer(t)
 
 	// SET greeting "hello world" — note the space inside the third argument.
@@ -45,58 +46,88 @@ func TestServerParsesRESPCommand(t *testing.T) {
 		t.Fatalf("failed to write request: %v", err)
 	}
 
-	response, err := bufio.NewReader(conn).ReadString('\n')
+	reply, err := NewRESPReader(conn).Read()
 	if err != nil {
-		t.Fatalf("failed to read response: %v", err)
+		t.Fatalf("failed to read reply: %v", err)
 	}
 
-	want := "received: [\"SET\" \"greeting\" \"hello world\"]\n"
-	if response != want {
-		t.Errorf("got %q, want %q", response, want)
+	want := ArrayValue(
+		BulkStringValue("SET"),
+		BulkStringValue("greeting"),
+		BulkStringValue("hello world"),
+	)
+	if !reflect.DeepEqual(reply, want) {
+		t.Errorf("got %+v, want %+v", reply, want)
 	}
 }
 
 func TestServerHandlesPipelinedCommands(t *testing.T) {
 	conn := startTestServer(t)
 
-	// Two complete commands sent in a single Write. The server must find
-	// the boundary between them using RESP's framing alone.
+	// Two complete commands sent in a single Write.
 	request := "*1\r\n$4\r\nPING\r\n*2\r\n$4\r\nECHO\r\n$2\r\nhi\r\n"
 	if _, err := conn.Write([]byte(request)); err != nil {
 		t.Fatalf("failed to write request: %v", err)
 	}
 
-	// One reader for both responses, for the reason the server keeps one
-	// RESPReader per connection: a second reader misses bytes the first buffered.
-	reader := bufio.NewReader(conn)
+	// One reader for both replies, so no buffered bytes are lost.
+	reader := NewRESPReader(conn)
 
-	wants := []string{
-		"received: [\"PING\"]\n",
-		"received: [\"ECHO\" \"hi\"]\n",
+	wants := []Value{
+		ArrayValue(BulkStringValue("PING")),
+		ArrayValue(BulkStringValue("ECHO"), BulkStringValue("hi")),
 	}
 	for _, want := range wants {
-		got, err := reader.ReadString('\n')
+		got, err := reader.Read()
 		if err != nil {
-			t.Fatalf("failed to read response: %v", err)
+			t.Fatalf("failed to read reply: %v", err)
 		}
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %+v, want %+v", got, want)
 		}
 	}
 }
 
-func TestServerClosesConnectionOnProtocolError(t *testing.T) {
+// expectErrorThenClose reads one reply, checks it is an ERR error reply, then
+// checks that the server closed the connection.
+func expectErrorThenClose(t *testing.T, conn net.Conn) {
+	t.Helper()
+
+	reader := NewRESPReader(conn)
+
+	reply, err := reader.Read()
+	if err != nil {
+		t.Fatalf("failed to read reply: %v", err)
+	}
+	if reply.Type != TypeError || !strings.HasPrefix(reply.Str, "ERR ") {
+		t.Errorf("expected an error reply starting with \"ERR \", got %+v", reply)
+	}
+
+	if _, err := reader.Read(); !errors.Is(err, io.EOF) {
+		t.Errorf("expected the server to close the connection, got %v", err)
+	}
+}
+
+func TestServerRepliesWithErrorOnProtocolError(t *testing.T) {
 	conn := startTestServer(t)
 
-	// Exactly one invalid byte, so the server has read everything before it
-	// hangs up — unread bytes would give us "connection reset" instead of EOF.
+	// A single invalid byte, so the server has read everything we sent before
+	// it hangs up — unread bytes would give us "connection reset" instead of EOF.
 	if _, err := conn.Write([]byte("!")); err != nil {
 		t.Fatalf("failed to write request: %v", err)
 	}
 
-	// Reading from a connection the other side has closed returns io.EOF.
-	_, err := bufio.NewReader(conn).ReadString('\n')
-	if !errors.Is(err, io.EOF) {
-		t.Errorf("expected io.EOF after the server closed the connection, got %v", err)
+	expectErrorThenClose(t, conn)
+}
+
+func TestServerRejectsCommandWithWrongShape(t *testing.T) {
+	conn := startTestServer(t)
+
+	// Valid RESP, invalid command: the element is an integer, not a bulk string.
+	// The server reads all of it to find out, so no bytes are left unread.
+	if _, err := conn.Write([]byte("*1\r\n:1\r\n")); err != nil {
+		t.Fatalf("failed to write request: %v", err)
 	}
+
+	expectErrorThenClose(t, conn)
 }

@@ -47,19 +47,28 @@ func RunServer(address string, store *Store) error {
 	return nil
 }
 
-// handleConnection serves one client: read a complete RESP value, check its shape,
-// reply. Reply is TEMPORARY text until a RESP encoder and real execution land.
+// handleConnection serves one client, reading a complete RESP command at a time
+// and replying. Replies are TEMPORARY echoes until real execution replaces them.
 func handleConnection(conn net.Conn, store *Store) {
 	defer conn.Close()
 
+	// One reader and one writer per connection, created once and reused: each
+	// holds buffered bytes belonging to this connection.
 	reader := NewRESPReader(conn)
+	writer := NewRESPWriter(conn)
 
 	for {
 		value, err := reader.Read()
 		if err != nil {
-			// io.EOF is a clean disconnect between commands: normal, not
-			// logged. Truncation, protocol and network errors are. All close.
-			if !errors.Is(err, io.EOF) {
+			switch {
+			case errors.Is(err, io.EOF):
+				// The client disconnected cleanly between commands.
+			case errors.Is(err, ErrProtocol):
+				// The client sent bytes that break RESP's rules.
+				sendProtocolError(conn, writer, err)
+			default:
+				// A truncated command or network failure: the connection
+				// is unusable, so there is no one left to reply to.
 				log.Printf("read error from %s: %v", conn.RemoteAddr(), err)
 			}
 			return
@@ -67,16 +76,41 @@ func handleConnection(conn net.Conn, store *Store) {
 
 		args, err := commandFromValue(value)
 		if err != nil {
-			log.Printf("bad command from %s: %v", conn.RemoteAddr(), err)
+			sendProtocolError(conn, writer, err)
 			return
 		}
 
-		// %q quotes each argument, so you can see where one ends and the next
-		// begins even when an argument contains a space or a newline.
-		response := fmt.Sprintf("received: %q\n", args)
-		if _, err := conn.Write([]byte(response)); err != nil {
+		if err := writer.Write(echoReply(args)); err != nil {
+			log.Printf("could not encode reply for %s: %v", conn.RemoteAddr(), err)
+			return
+		}
+
+		// Send this reply now. Flush is also where a network error from the
+		// buffered writes above finally surfaces.
+		if err := writer.Flush(); err != nil {
 			log.Printf("write error to %s: %v", conn.RemoteAddr(), err)
 			return
 		}
 	}
+}
+
+// sendProtocolError tells the client what was wrong with its input, as real
+// Redis does, before the caller closes the connection.
+func sendProtocolError(conn net.Conn, writer *RESPWriter, err error) {
+	log.Printf("protocol error from %s: %v", conn.RemoteAddr(), err)
+
+	// This connection closes whether or not the message lands, so Write and
+	// Flush errors are ignored on purpose — "_ =" makes that choice visible.
+	_ = writer.Write(ErrorValue("ERR " + err.Error()))
+	_ = writer.Flush()
+}
+
+// echoReply is TEMPORARY: it sends the parsed command back as an array of bulk
+// strings, so a real client shows what the server understood. Execution replaces it.
+func echoReply(args []string) Value {
+	items := make([]Value, 0, len(args))
+	for _, arg := range args {
+		items = append(items, BulkStringValue(arg))
+	}
+	return ArrayValue(items...)
 }
